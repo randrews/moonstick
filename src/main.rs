@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-mod hacks;
-
 use bsp::entry;
 use defmt::*;
 use defmt_rtt as _;
@@ -11,27 +9,24 @@ use panic_probe as _;
 use rp_pico as bsp;
 
 use bsp::hal::{
-    clocks::{init_clocks_and_plls, Clock},
+    clocks::init_clocks_and_plls,
     pac,
     sio::Sio,
-    spi::Spi,
     watchdog::Watchdog,
-    gpio::{Pins, FunctionSpi}
+    gpio::{Pins}
 };
-use display_interface_spi::SPIInterface;
 
 use embedded_graphics::Drawable;
 use embedded_graphics::geometry::Point;
 use embedded_graphics::mono_font::ascii::FONT_6X10;
-use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
-use embedded_graphics::prelude::Size;
-use embedded_graphics::primitives::{Primitive, PrimitiveStyleBuilder, Rectangle};
-use embedded_graphics::text::{Alignment, Text};
-use embedded_hal::delay::DelayNs;
+use embedded_graphics::mono_font::MonoTextStyleBuilder;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::text::Text;
 use fugit::RateExtU32;
-use ili9341::{DisplaySize240x320, Orientation};
-use crate::hacks::{MyDelay, SpiWithCS};
+use rp_pico::hal::gpio::{FunctionI2C, PullUp};
+use ssd1306::I2CDisplayInterface;
+use ssd1306::prelude::{DisplayConfig, DisplayRotation};
+use ssd1306::size::DisplaySize128x32;
 
 #[entry]
 fn main() -> ! {
@@ -52,42 +47,29 @@ fn main() -> ! {
         &mut pac.RESETS,
         &mut watchdog,
     ).ok().unwrap();
+    let mut timer = rp_pico::hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
 
-    let sclk = pins.gpio2.into_function::<FunctionSpi>();
-    let mosi = pins.gpio3.into_function::<FunctionSpi>();
-    let miso = pins.gpio4.into_function::<FunctionSpi>();
-    let cs = pins.gpio5.into_push_pull_output();
-    let rst = pins.gpio6.into_push_pull_output();
-    let dc = pins.gpio7.into_push_pull_output();
+    let sda = pins.gpio8.into_function::<FunctionI2C>().into_pull_type::<PullUp>();
+    let scl = pins.gpio9.into_function::<FunctionI2C>().into_pull_type::<PullUp>();
+    let i2c = rp_pico::hal::I2C::i2c0(pac.I2C0, sda, scl, 400.kHz(), &mut pac.RESETS, &clocks.peripheral_clock);
 
-    let spi = Spi::<_, _, _, 8>::new(pac.SPI0, (mosi, miso, sclk));
-    let spi = spi.init(
-        &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
-        16.MHz(),
-        embedded_hal::spi::MODE_0
-    );
 
-    let sint = SPIInterface::new(SpiWithCS{ bus: spi, cs }, dc);
-    let mut delay = MyDelay(cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz()));
-
-    let mut ili = ili9341::Ili9341::new(sint, rst, &mut delay, Orientation::LandscapeFlipped, DisplaySize240x320).unwrap();
-
-    let bg_style = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::BLACK)
+    let style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
         .build();
-    Rectangle::new(Point::zero(), Size::new(320, 240)).into_styled(bg_style).draw(&mut ili).unwrap();
 
-    Text::with_alignment(
-        "Mem cleared\ndefaults set",
-        Point::new(160, 120),
-        MonoTextStyle::new(&FONT_6X10, Rgb565::GREEN),
-        Alignment::Center,
-    ).draw(&mut ili).unwrap();
+
+    let interface = I2CDisplayInterface::new_custom_address(i2c, 0x3c);
+    let mut ssd = ssd1306::Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0).into_buffered_graphics_mode();
+
+    ssd.init().unwrap();
+    info!("Initted");
 
     loop {
-        delay.delay_ms(1000);
+        Text::new("Hello", Point::new(64, 16), style).draw(&mut ssd).unwrap();
+        ssd.flush().unwrap();
     }
 }
